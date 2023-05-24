@@ -197,6 +197,8 @@ class ModularCMAES:
             Denoting whether to keep running this step function.
 
         """
+        
+        # TODO: Add pop size change
         self.mutate()
         self.select()
         self.recombine()
