@@ -62,6 +62,7 @@ class ModularCMAES:
 
         #TODO: make bound correction vectorized and integrate with tpa
         """
+            
         perform_tpa = bool(
             self.parameters.step_size_adaptation == "tpa"
             and self.parameters.old_population
@@ -184,6 +185,23 @@ class ModularCMAES:
                 @ self.parameters.pweights
             ).reshape(-1, 1)
         )
+            
+    def correct_sigma(self):
+        if self.parameters.old_population is not None:
+            
+            exp_val_old = np.mean(self.parameters.old_population.x, axis=0)
+            weighted_avg_old = -1 * np.sum(self.parameters.weights_old * exp_val_old)
+            sigma_star_old = weighted_avg_old * self.parameters.d * (self.parameters.old_lambda_ // 2) / (
+                self.parameters.d - 1 + weighted_avg_old ** 2 * (self.parameters.old_lambda_ // 2)
+            )
+            
+            exp_val_new = np.mean(self.parameters.population.x, axis=0)
+            weighted_avg_new = -1 * np.sum(self.parameters.weights * exp_val_new)
+            sigma_star_new = weighted_avg_new * self.parameters.d * (self.parameters.lambda_ // 2) / (
+                self.parameters.d - 1 + weighted_avg_new ** 2 * (self.parameters.lambda_ // 2)
+            )
+            
+            self.parameters.correction_factor = sigma_star_new / sigma_star_old
 
     def step(self) -> bool:
         """The step method runs one iteration of the optimization process.
@@ -198,12 +216,14 @@ class ModularCMAES:
 
         """
         
-        # TODO: Add pop size change
         self.mutate()
         self.select()
         self.recombine()
+        #self.correct_sigma()
         self.parameters.adapt()
+
         return not any(self.break_conditions)
+        
 
     def sequential_break_conditions(self, i: int, f: float) -> bool:
         """Indicator whether there are any sequential break conditions.

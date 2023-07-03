@@ -7,6 +7,8 @@ from typing import Generator, TypeVar
 
 import numpy as np
 from scipy import linalg
+from scipy.sparse import diags
+from scipy.linalg import sqrtm
 
 from .utils import AnnotatedStruct
 from .sampling import (
@@ -285,6 +287,7 @@ class Parameters(AnnotatedStruct):
     vectorized_fitness: bool = False
     sobol: TypeVar("Sobol") = None
     halton: TypeVar("Halton") = None
+    pop_size_adaptation: (None, 'exp-inc', 'exp-dec', 'lin-inc', 'lin-dec', 'psa') = None
 
     __modules__ = (
         "active",
@@ -361,6 +364,8 @@ class Parameters(AnnotatedStruct):
         self.chiN = self.d ** 0.5 * (1 - 1 / (4 * self.d) + 1 / (21 * self.d ** 2))
         self.ds = 2 - (2 / self.d)
         self.beta = np.log(2) / max((np.sqrt(self.d) * np.log(self.d)), 1)
+        self.other_beta = 0.4
+        self.alpha = 1.4
         self.succes_ratio = .25
 
     def init_selection_parameters(self) -> None:
@@ -464,6 +469,7 @@ class Parameters(AnnotatedStruct):
         self.damps = 1.0 + (
             2.0 * max(0.0, np.sqrt((self.mueff - 1) / (self.d + 1)) - 1) + self.cs
         )
+        
 
     def init_dynamic_parameters(self) -> None:
         """Initialization function of parameters that represent the dynamic state of the CMA-ES.
@@ -472,21 +478,28 @@ class Parameters(AnnotatedStruct):
         eigenvectors and the learning rate sigma.
         """
         self.sigma = np.float64(self.sigma0) * (self.ub[0,0] - self.lb[0,0])
+        self.sigma_old = np.float64(0)
         if hasattr(self, "m") or self.x0 is None: 
             self.m = np.float64(np.random.uniform(self.lb, self.ub, (self.d, 1)))
         else:
             self.m = np.float64(self.x0.copy())
         self.m_old = np.empty((self.d, 1), dtype=np.float64)
+        self.C_old = np.eye(self.d , dtype=np.float64)
         self.dm = np.zeros(self.d, dtype=np.float64)
+        self.theta = np.zeros(int(self.d * (self.d + 3) / 2), dtype=np.float64)
         self.pc = np.zeros((self.d, 1), dtype=np.float64)
         self.ps = np.zeros((self.d, 1), dtype=np.float64)
+        self.pt = np.zeros(int(self.d * (self.d + 3) / 2), dtype=np.float64)
         self.B = np.eye(self.d, dtype=np.float64)
         self.C = np.eye(self.d, dtype=np.float64)
         self.D = np.ones((self.d, 1), dtype=np.float64)
+        self.I = np.eye(int(self.d * (self.d + 3) / 2), dtype=np.float64)
         self.inv_root_C = np.eye(self.d, dtype=np.float64)
         self.s = 0
         self.rank_tpa = None
         self.hs = True
+        self.old_lambda_ = 0
+        self.correction_factor = 1
 
     def adapt(self) -> None:
         """Method for adapting the internal state parameters.
@@ -500,6 +513,7 @@ class Parameters(AnnotatedStruct):
         self.adapt_sigma()
         self.adapt_covariance_matrix()
         self.perform_eigendecomposition()
+        self.adapt_population_size()
         self.record_statistics()
         self.calculate_termination_criteria()
         self.old_population = self.population.copy()
@@ -520,7 +534,10 @@ class Parameters(AnnotatedStruct):
 
         One of these methods can be selected by setting the step_size_adaptation
         parameter.
-        """
+        """ 
+        
+        self.sigma_old = self.sigma.copy()
+        
         if self.step_size_adaptation == "csa":
             self.sigma *= np.exp(
                 (self.cs / self.damps) * ((np.linalg.norm(self.ps) / self.chiN) - 1)
@@ -568,6 +585,10 @@ class Parameters(AnnotatedStruct):
         If the option `active` is specified, active update of the covariance
         matrix is performed, using negative weights.
         """
+        
+        self.C_old = self.C.copy()
+        self.weights_old = self.weights.copy()
+        
         rank_one = self.c1 * self.pc * self.pc.T
 
         dhs = (1 - self.hs) * self.cc * (2 - self.cc)
@@ -593,6 +614,8 @@ class Parameters(AnnotatedStruct):
                 * self.population.y[:, : self.mu]
                 @ self.population.y[:, : self.mu].T
             )
+            
+        
         self.C = old_C + rank_one + rank_mu
 
     def perform_eigendecomposition(self) -> None:
@@ -619,7 +642,8 @@ class Parameters(AnnotatedStruct):
 
     def adapt_evolution_paths(self) -> None:
         """Method to adapt the evolution paths ps and pc."""
-        self.dm = (self.m - self.m_old) / self.sigma
+        self.dm = (self.m - self.m_old) / self.sigma 
+        
         self.ps = (1 - self.cs) * self.ps + (
             np.sqrt(self.cs * (2 - self.cs) * self.mueff) * self.inv_root_C @ self.dm
         ) * self.ps_factor
@@ -628,11 +652,87 @@ class Parameters(AnnotatedStruct):
             np.linalg.norm(self.ps)
             / np.sqrt(1 - np.power(1 - self.cs, 2 * (self.used_budget / self.lambda_)))
         ) < (1.4 + (2 / (self.d + 1))) * self.chiN
-
+        
         self.pc = (1 - self.cc) * self.pc + (
             self.hs * np.sqrt(self.cc * (2 - self.cc) * self.mueff)
         ) * self.dm
-
+        
+        
+        if self.pop_size_adaptation == 'psa':
+            theta_old = self.theta.copy()
+            
+            self.calc_I()
+            
+            self.theta = np.concatenate((self.m.flatten(), self.sigma * self.C[np.triu_indices(self.d)]))
+            
+            first_bracket = 1 + 8 * (self.d - self.chiN) / (self.chiN ** 2) * (self.cs / self.damps) ** 2
+            
+            second_bracket = (self.d ** 2 + self.d) * self.cmu ** 2 / self.mueff + (
+                self.d ** 2 + self.d) * self.cc * (2 - self.cc) * self.c1 * self.cmu * self.mueff * np.sum(
+                np.power(self.weights, 3)) + self.c1 ** (2 * self.d ** 2) + (1 - 2 * self.d)
+                
+            expectation_root_I = (self.d * self.cmu ** 2) / self.mueff + (2 * self.d * (self.d - self.chiN ** 2) / 
+                self.chiN ** 2) * (self.cs / self.damps) ** 2 + 0.5 * first_bracket * second_bracket
+            
+            self.pt = (1 - self.other_beta) * self.pt + np.sqrt(self.other_beta * (2 - self.other_beta)
+                ) * self.I @ (self.theta - theta_old) / expectation_root_I
+        
+    def adapt_population_size(self) -> None:
+        
+        self.old_lambda_ = self.lambda_
+        new_lambda_ = self.lambda_
+        
+        if self.pop_size_adaptation == 'exp-dec':
+            if self.t % 32 == 0:
+                new_lambda_ = self.lambda_/1.2
+                    
+        elif self.pop_size_adaptation == 'exp-inc':
+            if self.t % 32 == 0:
+                new_lambda_ = self.lambda_*1.2
+                    
+        elif self.pop_size_adaptation == 'lin-dec':
+            if self.t % 32 == 0:
+                new_lambda_ = self.lambda_-10
+                    
+        elif self.pop_size_adaptation == 'lin-inc':
+            if self.t % 32 == 0:
+                new_lambda_ = self.lambda_+10
+                
+        elif self.pop_size_adaptation == 'psa':
+            new_lambda_ = round(self.lambda_ * np.exp(self.other_beta * 
+                (1 - np.linalg.norm(self.pt) / self.alpha)))
+        
+        self.update_popsize(self.stochastic_round(min(max(new_lambda_, 4), 128)))
+        
+        #self.sigma = self.correction_factor * self.sigma
+        
+    def stochastic_round(self, x):
+        d = abs(x - int(x))
+        s = np.random.choice([0,1], size=1, p=[1-d, d])
+        return int(int(x)+s)
+        
+        
+    def calc_I(self):
+        
+        self.I = np.eye(int(self.d * (self.d + 3) / 2), dtype=np.float64)
+        
+        inv_C = np.linalg.inv(self.C_old)
+        
+        grad_m = np.eye(int(self.d * (self.d + 3) / 2), self.d)
+        grad_m[self.d:, self.d:] = 0
+        
+        grad_c = np.zeros((int(self.d * (self.d + 3) / 2), self.d, self.d))
+        
+        idx = np.array(np.triu_indices(self.d))
+        for i in range(self.d, grad_c.shape[0]):
+            grad_c[i,idx[0,i - self.d],idx[1,i - self.d]] = 1
+        
+        for m in range(len(self.theta)):
+            for n in range(len(self.theta)):
+                self.I[m,n] = grad_m[m,:].T @ inv_C @ grad_m[n,:] + 0.5 * np.trace(
+                    inv_C @ grad_c[m,:,:] @ inv_C @ grad_c[n,:,:]
+                )
+        
     def perform_local_restart(self) -> None:
         """Method performing local restart, if a restart strategy is specified."""
         if self.local_restart:
