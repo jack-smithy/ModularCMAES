@@ -58,7 +58,7 @@ budget_factor = 2500
 reps = 3
 
 
-for id in range(1,2):
+for id in range(1):
     
     problem = ioh.get_problem(
         fid=id+1,
@@ -71,9 +71,9 @@ for id in range(1,2):
 
     logger = ioh.logger.Analyzer(
         triggers=[trigger],
-        folder_name=f'./data/lin-dec-fid{id}-{dim}D',
+        folder_name=f'./data/psa-fid{id+1}-{dim}D',
         root=os.getcwd(),
-        algorithm_name='lin-dec',
+        algorithm_name='psa',
         store_positions=False)
 
     for rep in range(reps):
@@ -89,7 +89,9 @@ for id in range(1,2):
             problem,
             dim,
             budget = dim*budget_factor,
-            pop_size_adaptation = 'psa')
+            lambda_ = 8,
+            pop_size_adaptation='exp-inc',
+            rounding_scheme='stochastic')
 
         cma.run()
         print(problem.state.current_best.y)

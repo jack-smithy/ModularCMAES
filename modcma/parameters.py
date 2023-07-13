@@ -9,6 +9,7 @@ import numpy as np
 from scipy import linalg
 from scipy.sparse import diags
 from scipy.linalg import sqrtm
+from scipy.stats import norm
 
 from .utils import AnnotatedStruct
 from .sampling import (
@@ -288,6 +289,7 @@ class Parameters(AnnotatedStruct):
     sobol: TypeVar("Sobol") = None
     halton: TypeVar("Halton") = None
     pop_size_adaptation: (None, 'exp-inc', 'exp-dec', 'lin-inc', 'lin-dec', 'psa') = None
+    rounding_scheme: (None, 'stochastic') = None
 
     __modules__ = (
         "active",
@@ -367,6 +369,7 @@ class Parameters(AnnotatedStruct):
         self.other_beta = 0.4
         self.alpha = 1.4
         self.succes_ratio = .25
+        
 
     def init_selection_parameters(self) -> None:
         """Initialization function for parameters that influence in selection."""
@@ -478,7 +481,7 @@ class Parameters(AnnotatedStruct):
         eigenvectors and the learning rate sigma.
         """
         self.sigma = np.float64(self.sigma0) * (self.ub[0,0] - self.lb[0,0])
-        self.sigma_old = np.float64(0)
+        self.sigma_old = self.sigma
         if hasattr(self, "m") or self.x0 is None: 
             self.m = np.float64(np.random.uniform(self.lb, self.ub, (self.d, 1)))
         else:
@@ -498,7 +501,7 @@ class Parameters(AnnotatedStruct):
         self.s = 0
         self.rank_tpa = None
         self.hs = True
-        self.old_lambda_ = 0
+        self.old_lambda_ = self.lambda_
         self.correction_factor = 1
 
     def adapt(self) -> None:
@@ -513,6 +516,7 @@ class Parameters(AnnotatedStruct):
         self.adapt_sigma()
         self.adapt_covariance_matrix()
         self.perform_eigendecomposition()
+        #self.calc_I()
         self.adapt_population_size()
         self.record_statistics()
         self.calculate_termination_criteria()
@@ -535,7 +539,6 @@ class Parameters(AnnotatedStruct):
         One of these methods can be selected by setting the step_size_adaptation
         parameter.
         """ 
-        
         self.sigma_old = self.sigma.copy()
         
         if self.step_size_adaptation == "csa":
@@ -657,37 +660,33 @@ class Parameters(AnnotatedStruct):
             self.hs * np.sqrt(self.cc * (2 - self.cc) * self.mueff)
         ) * self.dm
         
+        # theta_old = self.theta.copy()
+            
+        # self.theta = np.concatenate((self.m.flatten(), self.sigma * self.C[np.triu_indices(self.d)]))
+            
+        # first_bracket = 1 + 8 * (self.d - self.chiN**2) / (self.chiN ** 2) * (self.cs / self.damps) ** 2
+            
+        # second_bracket = (self.d ** 2 + self.d) * self.cmu ** 2 / self.mueff + (
+        #     self.d ** 2 + self.d) * self.cc * (2 - self.cc) * self.c1 * self.cmu * self.mueff * np.sum(
+        #     np.power(self.weights, 3)) + self.c1 ** 2 * (self.d**2 + self.d)
+            
+        # expectation_root_I = (self.d * self.cmu ** 2) / self.mueff + (2 * self.d * (self.d - self.chiN ** 2) / 
+        #     self.chiN ** 2) * (self.cs / self.damps) ** 2 + 0.5 * first_bracket * second_bracket
         
-        if self.pop_size_adaptation == 'psa':
-            theta_old = self.theta.copy()
-            
-            self.calc_I()
-            
-            self.theta = np.concatenate((self.m.flatten(), self.sigma * self.C[np.triu_indices(self.d)]))
-            
-            first_bracket = 1 + 8 * (self.d - self.chiN) / (self.chiN ** 2) * (self.cs / self.damps) ** 2
-            
-            second_bracket = (self.d ** 2 + self.d) * self.cmu ** 2 / self.mueff + (
-                self.d ** 2 + self.d) * self.cc * (2 - self.cc) * self.c1 * self.cmu * self.mueff * np.sum(
-                np.power(self.weights, 3)) + self.c1 ** (2 * self.d ** 2) + (1 - 2 * self.d)
-                
-            expectation_root_I = (self.d * self.cmu ** 2) / self.mueff + (2 * self.d * (self.d - self.chiN ** 2) / 
-                self.chiN ** 2) * (self.cs / self.damps) ** 2 + 0.5 * first_bracket * second_bracket
-            
-            self.pt = (1 - self.other_beta) * self.pt + np.sqrt(self.other_beta * (2 - self.other_beta)
-                ) * self.I @ (self.theta - theta_old) / expectation_root_I
+        # self.pt = (1 - self.other_beta) * self.pt + np.sqrt(self.other_beta * (2 - self.other_beta)
+        #     ) * self.I @ (self.theta - theta_old) / np.power(expectation_root_I, 0.5)
         
-    def adapt_population_size(self) -> None:
         
+    def adapt_population_size(self) -> None:     
         self.old_lambda_ = self.lambda_
         new_lambda_ = self.lambda_
         
         if self.pop_size_adaptation == 'exp-dec':
-            if self.t % 32 == 0:
+            if self.t % 48 == 0:
                 new_lambda_ = self.lambda_/1.2
                     
         elif self.pop_size_adaptation == 'exp-inc':
-            if self.t % 32 == 0:
+            if self.t % 48 == 0:
                 new_lambda_ = self.lambda_*1.2
                     
         elif self.pop_size_adaptation == 'lin-dec':
@@ -699,24 +698,24 @@ class Parameters(AnnotatedStruct):
                 new_lambda_ = self.lambda_+10
                 
         elif self.pop_size_adaptation == 'psa':
-            new_lambda_ = round(self.lambda_ * np.exp(self.other_beta * 
-                (1 - np.linalg.norm(self.pt) / self.alpha)))
+            new_lambda_ *= np.exp(self.other_beta * 
+                (1 - np.linalg.norm(self.pt, 2) / self.alpha))
         
-        self.update_popsize(self.stochastic_round(min(max(new_lambda_, 4), 128)))
+        self.update_popsize(self.round_lambda(min(max(new_lambda_, 4), 128)))
         
-        #self.sigma = self.correction_factor * self.sigma
+        self.sigma = self.correction_factor * self.sigma
         
-    def stochastic_round(self, x):
-        d = abs(x - int(x))
-        s = np.random.choice([0,1], size=1, p=[1-d, d])
-        return int(int(x)+s)
+    def round_lambda(self, x):
         
+        if self.rounding_scheme == 'stochastic':
+            d = abs(x - int(x))
+            s = np.random.choice([0,1], size=1, p=[1-d, d])
+            return int(int(x)+s)
+        else:
+            return round(x)
         
     def calc_I(self):
-        
-        self.I = np.eye(int(self.d * (self.d + 3) / 2), dtype=np.float64)
-        
-        inv_C = np.linalg.inv(self.C_old)
+        inv_C = np.linalg.inv(self.sigma_old * self.C_old)
         
         grad_m = np.eye(int(self.d * (self.d + 3) / 2), self.d)
         grad_m[self.d:, self.d:] = 0
@@ -725,13 +724,16 @@ class Parameters(AnnotatedStruct):
         
         idx = np.array(np.triu_indices(self.d))
         for i in range(self.d, grad_c.shape[0]):
-            grad_c[i,idx[0,i - self.d],idx[1,i - self.d]] = 1
+            grad_c[i,idx[0,i - self.d],idx[1,i - self.d]] = 1      
+    
+        self.I = grad_m @ inv_C @ grad_m.T
         
         for m in range(len(self.theta)):
             for n in range(len(self.theta)):
-                self.I[m,n] = grad_m[m,:].T @ inv_C @ grad_m[n,:] + 0.5 * np.trace(
+                self.I[m,n] += 0.5 * np.trace(
                     inv_C @ grad_c[m,:,:] @ inv_C @ grad_c[n,:,:]
                 )
+
         
     def perform_local_restart(self) -> None:
         """Method performing local restart, if a restart strategy is specified."""
@@ -1032,3 +1034,131 @@ class BIPOPParameters(AnnotatedStruct):
 
         if self.lambda_small % 2 != 0:
             self.lambda_small += 1
+
+
+class NormalOrderStatistics(object):
+    """Compute Moments of Normal Order Statistics
+
+    Requires
+    --------
+    numpy
+    scipy.stats.norm
+    """
+
+    def __init__(self, n):
+        """Normal Order Statistics from `n` populations
+
+        Normal order statistics of population size `n` are the ordered 
+        random variables
+            N_{1:n} < N_{2:n} < ... < N_{n:n}
+        that are drawn from the standard normal distribution N(0, 1)
+        independently.
+
+        Parameters
+        ----------
+        n : int
+            population size
+        """
+        self._n = n
+        self._pr = np.arange(1, n + 1, dtype=float) / (n + 1)
+        self._q0r = norm.ppf(self._pr)
+        self._q1r = 1.0 / norm.pdf(self._q0r)
+        self._q2r = self._q0r * self._q1r**2
+        self._q3r = (1.0 + 2.0 * self._q0r**2) * self._q1r**3
+        self._q4r = self._q0r * (7.0 + 6.0 * self._q0r**2) * self._q1r**4
+
+    def exp(self):
+        """Expectation of the normal order statistics, using Taylor Expansion.
+
+        Returns
+        -------
+        1D ndarray : array of expectation of the normal order statistics
+
+        Algorithm
+        ---------
+        Eq. (4.6.3)--(4.6.5) combined with Example 4.6 in "Order Statistics".
+        """
+        result = self._q0r
+        result += self._pr * (1 - self._pr) * self._q2r / (2 * self._n + 4)
+        result += self._pr * (1 - self._pr) * (
+            1 - 2 * self._pr) * self._q3r / (3 * (self._n + 2)**2)
+        result += (self._pr *
+                   (1 - self._pr))**2 * self._q4r / (8 * (self._n + 2)**2)
+        return result
+
+    def var(self):
+        """Variance of the normal order statistics, using Taylor Expansion.
+
+        Returns
+        -------
+        1D ndarray : array of variance of the normal order statistics
+
+        Algorithm
+        ---------
+        Eq. (4.6.3)--(4.6.5) combined with Example 4.6 in "Order Statistics".
+        """
+        result = self._pr * (1 - self._pr) * self._q1r**2 / (self._n + 2)
+        result += self._pr * (1 - self._pr) * (
+            1 - 2 * self._pr) * 2 * self._q1r * self._q2r / ((self._n + 2)**2)
+        result += (self._pr * (1 - self._pr))**2 * (
+            self._q1r * self._q3r + self._q2r**2 / 2) / (self._n + 2)**2
+        return result
+
+    def cov(self):
+        """Covariance of the normal order statistics, using Taylor Expansion.
+
+        Returns
+        -------
+        2D ndarray : array of covariance of the normal order statistics
+
+        Algorithm
+        ---------
+        Eq. (4.6.3)--(4.6.5) combined with Example 4.6 in "Order Statistics".
+        """
+        result = np.outer(self._pr**2 * self._q2r, (1 - self._pr)
+                          **2 * self._q2r) / 2
+        result += np.outer(self._pr * (1 - 2 * self._pr) * self._q2r,
+                           (1 - self._pr) * self._q1r)
+        result += np.outer(self._pr * self._q1r,
+                           (1 - self._pr) * (1 - 2 * self._pr) * self._q2r)
+        result += np.outer(self._pr**2 * (1 - self._pr) * self._q3r,
+                           (1 - self._pr) * self._q1r) / 2
+        result += np.outer(self._pr * self._q1r, self._pr * (1 - self._pr)
+                           **2 * self._q3r) / 2
+        result /= (self._n + 2)**2
+        result += np.outer(self._pr * self._q1r,
+                           (1 - self._pr) * self._q1r) / (self._n + 2)
+        return np.triu(result) + np.triu(result, k=1).T
+
+    def blom(self):
+        """Blom's Approximation of the Expectation of Normal Order Statistics
+
+        Returns
+        -------
+        1D ndarray : array of expectation of the normal order statistics
+        """
+        alpha = 0.375
+        pir = (np.arange(1, self._n + 1) - alpha) / (self._n + 1 - 2 * alpha)
+        return norm.ppf(pir)
+
+    def davis_stephens(self):
+        """Refinement of Covariance Matrix by Algorithm 128
+
+        Returns
+        -------
+        2D ndarray : array of covariance of the normal order statistics
+
+        See
+        ---
+        https://statistics.stanford.edu/sites/default/files/SOL%20ONR%20254.pdf
+        """
+        result = self.cov()
+        n = self._n
+        for i in range((n + 1) // 2):
+            rowsum = np.sum(result[i])
+            free = np.sum(result[i, i:n - i])
+            result[i, i:n - i] *= 1 + (1 - rowsum) / free
+            result[i:n - i, i] = result[i, i:n - i]
+            result[n - i - 1, i:n - i] = (result[i, i:n - i])[::-1]
+            result[i:n - i, n - i - 1] = (result[i, i:n - i])[::-1]
+        return result
