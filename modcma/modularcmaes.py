@@ -6,7 +6,7 @@ from typing import List, Callable
 
 import numpy as np
 
-from .parameters import Parameters, NormalOrderStatistics
+from .parameters import Parameters
 from .population import Population
 from .utils import timeit, ert
 
@@ -206,19 +206,6 @@ class ModularCMAES:
         self.parameters.adapt()
 
         return not any(self.break_conditions)
-    
-    def sigma_normalization_factor(self, cm=1.):
-        """sigma = snf * ||xmean|| """
-        nos = NormalOrderStatistics(len(self.weights))
-        nlam = nos.blom()
-        beta = -np.dot(nlam, self.weights)
-        if len(self.weights) < 50:
-            nnlam = nos.davis_stephens()
-            gamma = beta**2 + np.dot(np.dot(nnlam, self.weights), self.weights)
-        else:
-            gamma = beta**2
-        muw = np.sum(np.abs(self.weights)) ** 2 / np.dot(self.weights, self.weights)
-        return beta * muw / (self.d - 1 + gamma * muw) / cm
         
 
     def sequential_break_conditions(self, i: int, f: float) -> bool:

@@ -498,11 +498,17 @@ class Parameters(AnnotatedStruct):
         self.D = np.ones((self.d, 1), dtype=np.float64)
         self.I = np.eye(int(self.d * (self.d + 3) / 2), dtype=np.float64)
         self.inv_root_C = np.eye(self.d, dtype=np.float64)
+        self.root_C = np.eye(self.d, dtype=np.float64)
         self.s = 0
         self.rank_tpa = None
         self.hs = True
         self.old_lambda_ = self.lambda_
-        self.correction_factor = 1
+        self.correction_factor = None
+        self.pxmean = np.zeros(self.d, dtype=np.float64)
+        self.pcov = np.zeros((self.d, self.d), dtype=np.float64)
+        self.old_invLt = self.transform_inverse(np.eye(self.d))
+        self.pnorm = 1
+        self.gammat = 0
 
     def adapt(self) -> None:
         """Method for adapting the internal state parameters.
@@ -516,8 +522,8 @@ class Parameters(AnnotatedStruct):
         self.adapt_sigma()
         self.adapt_covariance_matrix()
         self.perform_eigendecomposition()
-        #self.calc_I()
         self.adapt_population_size()
+        self.correct_sigma()
         self.record_statistics()
         self.calculate_termination_criteria()
         self.old_population = self.population.copy()
@@ -640,6 +646,7 @@ class Parameters(AnnotatedStruct):
             if np.all(self.D > 0):
                 self.D = np.sqrt(self.D.reshape(-1, 1))
                 self.inv_root_C = np.dot(self.B, self.D ** -1 * self.B.T)
+                self.root_c = np.dot(self.B, self.D * self.B.T)
             else:
                 self.init_dynamic_parameters()
 
@@ -660,23 +667,26 @@ class Parameters(AnnotatedStruct):
             self.hs * np.sqrt(self.cc * (2 - self.cc) * self.mueff)
         ) * self.dm
         
-        # theta_old = self.theta.copy()
-            
-        # self.theta = np.concatenate((self.m.flatten(), self.sigma * self.C[np.triu_indices(self.d)]))
-            
-        # first_bracket = 1 + 8 * (self.d - self.chiN**2) / (self.chiN ** 2) * (self.cs / self.damps) ** 2
-            
-        # second_bracket = (self.d ** 2 + self.d) * self.cmu ** 2 / self.mueff + (
-        #     self.d ** 2 + self.d) * self.cc * (2 - self.cc) * self.c1 * self.cmu * self.mueff * np.sum(
-        #     np.power(self.weights, 3)) + self.c1 ** 2 * (self.d**2 + self.d)
-            
-        # expectation_root_I = (self.d * self.cmu ** 2) / self.mueff + (2 * self.d * (self.d - self.chiN ** 2) / 
-        #     self.chiN ** 2) * (self.cs / self.damps) ** 2 + 0.5 * first_bracket * second_bracket
+        new_Lt = self.transform(np.eye(self.d))
+
+        delta_xmean = self.dm.flatten() * self.sigma
+        delta_xmean = np.dot(self.old_invLt.T, delta_xmean)
+
+        delta_cov = np.dot(new_Lt, self.old_invLt)
+        delta_cov = np.dot(delta_cov.T, delta_cov) - np.eye(self.d)
+
+        factor = self.expected_update_snorm()
+        pnormfac = np.sqrt(self.other_beta * (2 - self.other_beta) / factor)
+        self.pxmean *= (1 - self.other_beta)
+        self.pxmean += pnormfac * delta_xmean
+        self.pcov *= (1 - self.other_beta)
+        self.pcov += pnormfac * delta_cov
+
+        self.pmnorm = np.sum(self.pxmean ** 2)
+        self.pcnorm = np.sum(self.pcov ** 2) / 2
+        self.pnorm = self.pmnorm + self.pcnorm
         
-        # self.pt = (1 - self.other_beta) * self.pt + np.sqrt(self.other_beta * (2 - self.other_beta)
-        #     ) * self.I @ (self.theta - theta_old) / np.power(expectation_root_I, 0.5)
-        
-        
+
     def adapt_population_size(self) -> None:     
         self.old_lambda_ = self.lambda_
         new_lambda_ = self.lambda_
@@ -699,13 +709,12 @@ class Parameters(AnnotatedStruct):
                 
         elif self.pop_size_adaptation == 'psa':
             new_lambda_ *= np.exp(self.other_beta * 
-                (1 - np.linalg.norm(self.pt, 2) / self.alpha))
+                (1 - self.pnorm / self.alpha))
         
-        self.update_popsize(self.round_lambda(min(max(new_lambda_, 4), 128)))
+        self.update_popsize(self.round_lambda(min(max(new_lambda_, 10), 512*10)))
+
         
-        self.sigma = self.correction_factor * self.sigma
-        
-    def round_lambda(self, x):
+    def round_lambda(self, x) -> int:
         
         if self.rounding_scheme == 'stochastic':
             d = abs(x - int(x))
@@ -714,25 +723,54 @@ class Parameters(AnnotatedStruct):
         else:
             return round(x)
         
-    def calc_I(self):
-        inv_C = np.linalg.inv(self.sigma_old * self.C_old)
+
+    def correct_sigma(self) -> None:
+        if self.correction_factor is not None:
+            correction_factor_new = self.sigma_normalization_factor()
+            self.sigma *= correction_factor_new / self.correction_factor
+            self.correction_factor = correction_factor_new
+        else:
+            self.correction_factor = self.sigma_normalization_factor()
         
-        grad_m = np.eye(int(self.d * (self.d + 3) / 2), self.d)
-        grad_m[self.d:, self.d:] = 0
-        
-        grad_c = np.zeros((int(self.d * (self.d + 3) / 2), self.d, self.d))
-        
-        idx = np.array(np.triu_indices(self.d))
-        for i in range(self.d, grad_c.shape[0]):
-            grad_c[i,idx[0,i - self.d],idx[1,i - self.d]] = 1      
+
+    def sigma_normalization_factor(self):
+        nos = NormalOrderStatistics(len(self.weights))
+        nlam = nos.blom()
+        beta = -np.dot(nlam, self.weights)
+        if len(self.weights) < 50:
+            nnlam = nos.davis_stephens()
+            gamma = beta**2 + np.dot(np.dot(nnlam, self.weights), self.weights)
+        else:
+            gamma = beta**2
+        muw = np.sum(np.abs(self.weights)) ** 2 / np.dot(self.weights, self.weights)
+        return beta * muw / (self.d - 1 + gamma * muw) / self.cmu
     
-        self.I = grad_m @ inv_C @ grad_m.T
+
+    def expected_update_snorm(self):
+
+        N = self.d
+        w = self.weights
+
+        sfactor_a6 = 4. * self.ps_factor * (N / self.chiN ** 2 - 1) * (self.cs / self.ds) ** 2
+        sfactor_a5 = 1 + sfactor_a6 * 2
+
+        v = np.zeros(w.shape)
+        v[w > 0] = w[w > 0]
         
-        for m in range(len(self.theta)):
-            for n in range(len(self.theta)):
-                self.I[m,n] += 0.5 * np.trace(
-                    inv_C @ grad_c[m,:,:] @ inv_C @ grad_c[n,:,:]
-                )
+        mfactor = 1 * N * np.sum(w[w > 0] ** 2)
+        rankmu_factor = (N * (N + 1)) * (self.cmu**2 * np.dot(v, v))
+        muone_factor = (N * (N + 1)) * (self.cc * (2.0 - self.cc) * self.c1 * self.cmu * np.sum(w[w > 0]**2 * v[w > 0]) / np.sum(w[w > 0] ** 2))
+        rankone_factor = self.c1**2 * (1 * N**2 + (2 * 1 ** 2 - 2 * 1 + 1) * N)
+        cfactor = rankmu_factor + muone_factor + rankone_factor
+        return mfactor + (sfactor_a5 * cfactor + N * sfactor_a6) / 2
+    
+
+    def transform(self, x):
+        return np.dot(np.asarray(x), self.root_C) * self.sigma
+    
+    
+    def transform_inverse(self, x):
+        return np.dot(np.asarray(x), self.inv_root_C) / self.sigma
 
         
     def perform_local_restart(self) -> None:
@@ -801,6 +839,7 @@ class Parameters(AnnotatedStruct):
         A new Parameters instance
 
         """
+        print(f'Config array: {config_array}')
         if not len(config_array) == len(Parameters.__modules__):
             raise AttributeError(
                 "config_array must be of length " + str(len(Parameters.__modules__))

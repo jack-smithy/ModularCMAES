@@ -55,10 +55,10 @@ class TrackedCMAES(ModularCMAES):
 
 dim = 16
 budget_factor = 2500
-reps = 3
+reps = 10
 
 
-for id in range(1):
+for id in range(10):
     
     problem = ioh.get_problem(
         fid=id+1,
@@ -89,9 +89,7 @@ for id in range(1):
             problem,
             dim,
             budget = dim*budget_factor,
-            lambda_ = 8,
-            pop_size_adaptation='exp-inc',
-            rounding_scheme='stochastic')
+            pop_size_adaptation='psa')
 
         cma.run()
         print(problem.state.current_best.y)
