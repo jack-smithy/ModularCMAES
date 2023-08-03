@@ -53,12 +53,12 @@ class TrackedCMAES(ModularCMAES):
         return res
 
 
-dim = 16
+dim = 10
 budget_factor = 2500
 reps = 10
+algo = 'exp-inc'
 
-
-for id in range(10):
+for id in range(1,2):
     
     problem = ioh.get_problem(
         fid=id+1,
@@ -71,28 +71,30 @@ for id in range(10):
 
     logger = ioh.logger.Analyzer(
         triggers=[trigger],
-        folder_name=f'./data/psa-fid{id+1}-{dim}D',
+        folder_name=f'./data/{algo}-fid{id+1}-{dim}D',
         root=os.getcwd(),
-        algorithm_name='psa',
+        algorithm_name=f'{algo}',
         store_positions=False)
+    
+    tracked_parameters = TrackedParameters()
+    logger.watch(tracked_parameters, [
+        x.name for x in fields(tracked_parameters)])
+
+    problem.attach_logger(logger)
 
     for rep in range(reps):
-        tracked_parameters = TrackedParameters()
-        logger.watch(tracked_parameters, [
-            x.name for x in fields(tracked_parameters)])
-
-        problem.attach_logger(logger)
 
         np.random.seed(rep)
         cma = TrackedCMAES(
             tracked_parameters,
             problem,
             dim,
+            lambda_=10,
             budget = dim*budget_factor,
-            pop_size_adaptation='psa')
+            pop_size_adaptation=f'{algo}'
+            ).run()
 
-        cma.run()
-        print(problem.state.current_best.y)
+        print(f'fid={id+1}/24, rep={rep+1}/{reps}, best y={problem.state.current_best.y}')
 
         problem.reset()
         logger.close()

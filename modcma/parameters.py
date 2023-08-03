@@ -685,18 +685,17 @@ class Parameters(AnnotatedStruct):
         self.pmnorm = np.sum(self.pxmean ** 2)
         self.pcnorm = np.sum(self.pcov ** 2) / 2
         self.pnorm = self.pmnorm + self.pcnorm
-        
 
     def adapt_population_size(self) -> None:     
         self.old_lambda_ = self.lambda_
         new_lambda_ = self.lambda_
         
         if self.pop_size_adaptation == 'exp-dec':
-            if self.t % 48 == 0:
+            if self.t % 32 == 0:
                 new_lambda_ = self.lambda_/1.2
                     
         elif self.pop_size_adaptation == 'exp-inc':
-            if self.t % 48 == 0:
+            if self.t % 32 == 0:
                 new_lambda_ = self.lambda_*1.2
                     
         elif self.pop_size_adaptation == 'lin-dec':
@@ -711,8 +710,7 @@ class Parameters(AnnotatedStruct):
             new_lambda_ *= np.exp(self.other_beta * 
                 (1 - self.pnorm / self.alpha))
         
-        self.update_popsize(self.round_lambda(min(max(new_lambda_, 10), 512*10)))
-
+        self.update_popsize(self.round_lambda(min(max(new_lambda_, 10), 128)))
         
     def round_lambda(self, x) -> int:
         
