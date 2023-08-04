@@ -290,6 +290,8 @@ class Parameters(AnnotatedStruct):
     halton: TypeVar("Halton") = None
     pop_size_adaptation: (None, 'exp-inc', 'exp-dec', 'lin-inc', 'lin-dec', 'psa') = None
     rounding_scheme: (None, 'stochastic') = None
+    min_lambda_: int = None
+    max_lambda_: int = None
 
     __modules__ = (
         "active",
@@ -313,6 +315,9 @@ class Parameters(AnnotatedStruct):
         self.init_adaptation_parameters()
         self.init_dynamic_parameters()
         self.init_local_restart_parameters()
+        
+        print(self.min_lambda_)
+        print(self.max_lambda_)
 
     def get_sampler(self) -> Generator:
         """Function to return a sampler generator based on the values of other parameters.
@@ -350,7 +355,7 @@ class Parameters(AnnotatedStruct):
         self.used_budget = 0
         self.n_out_of_bounds = 0
         self.budget = self.budget or int(1e4) * self.d
-        self.max_lambda_ = (self.d * self.lambda_) ** 2
+        #self.max_lambda_ = (self.d * self.lambda_) ** 2
         self.fopt = float("inf")
         self.xopt = None
         self.t = 0
@@ -374,6 +379,8 @@ class Parameters(AnnotatedStruct):
     def init_selection_parameters(self) -> None:
         """Initialization function for parameters that influence in selection."""
         self.lambda_ = self.lambda_ or (4 + np.floor(3 * np.log(self.d))).astype(int)
+        self.min_lambda_ = self.min_lambda_ or 4
+        self.max_lambda_ = self.max_lambda_ or 512
 
         if self.mirrored == "mirrored pairwise":
             self.seq_cutoff_factor = max(2, self.seq_cutoff_factor)
@@ -710,7 +717,7 @@ class Parameters(AnnotatedStruct):
             new_lambda_ *= np.exp(self.other_beta * 
                 (1 - self.pnorm / self.alpha))
         
-        self.update_popsize(self.round_lambda(min(max(new_lambda_, 10), 128)))
+        self.update_popsize(self.round_lambda(min(max(new_lambda_, self.min_lambda_), self.max_lambda_)))
         
     def round_lambda(self, x) -> int:
         

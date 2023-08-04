@@ -89,9 +89,11 @@ for id in range(1,2):
             tracked_parameters,
             problem,
             dim,
-            lambda_=10,
+            lambda_=4,
             budget = dim*budget_factor,
-            pop_size_adaptation=f'{algo}'
+            pop_size_adaptation=f'{algo}',
+            min_lambda_=8,
+            max_lambda_=50
             ).run()
 
         print(f'fid={id+1}/24, rep={rep+1}/{reps}, best y={problem.state.current_best.y}')
