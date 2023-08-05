@@ -20,9 +20,6 @@ class TrackedParameters:
     pc_norm: float = 0
     pc_mean: float = 0
     lambda_: int = 0
-    ps_ratio: float = 0
-    ps_squared: float = 0
-
 
     def update(self, parameters):
         self.sigma = parameters.sigma
@@ -34,9 +31,6 @@ class TrackedParameters:
                     np.linalg.norm(getattr(parameters, attr)))
             setattr(self, f'{attr}_mean'.lower(),
                     np.mean(getattr(parameters, attr)))
-
-        self.ps_squared = np.sum(parameters.ps**2)
-        self.ps_ratio = np.sqrt(self.ps_squared) / parameters.chiN
 
 
 class TrackedCMAES(ModularCMAES):
@@ -54,11 +48,11 @@ class TrackedCMAES(ModularCMAES):
 
 
 dim = 10
-budget_factor = 2500
+budget_factor = 2000
 reps = 10
-algo = 'exp-inc'
+algo = 'psa'
 
-for id in range(1,2):
+for id in range(24):
     
     problem = ioh.get_problem(
         fid=id+1,
@@ -71,12 +65,13 @@ for id in range(1,2):
 
     logger = ioh.logger.Analyzer(
         triggers=[trigger],
-        folder_name=f'./data/{algo}-fid{id+1}-{dim}D',
+        folder_name=f'./psa-test-data/{algo}-fid{id+1}-{dim}D',
         root=os.getcwd(),
         algorithm_name=f'{algo}',
         store_positions=False)
     
     tracked_parameters = TrackedParameters()
+    
     logger.watch(tracked_parameters, [
         x.name for x in fields(tracked_parameters)])
 
@@ -89,11 +84,10 @@ for id in range(1,2):
             tracked_parameters,
             problem,
             dim,
-            lambda_=4,
             budget = dim*budget_factor,
             pop_size_adaptation=f'{algo}',
-            min_lambda_=8,
-            max_lambda_=50
+            min_lambda_=10,
+            max_lambda_=5120,
             ).run()
 
         print(f'fid={id+1}/24, rep={rep+1}/{reps}, best y={problem.state.current_best.y}')

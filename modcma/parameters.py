@@ -315,9 +315,6 @@ class Parameters(AnnotatedStruct):
         self.init_adaptation_parameters()
         self.init_dynamic_parameters()
         self.init_local_restart_parameters()
-        
-        print(self.min_lambda_)
-        print(self.max_lambda_)
 
     def get_sampler(self) -> Generator:
         """Function to return a sampler generator based on the values of other parameters.
@@ -488,18 +485,14 @@ class Parameters(AnnotatedStruct):
         eigenvectors and the learning rate sigma.
         """
         self.sigma = np.float64(self.sigma0) * (self.ub[0,0] - self.lb[0,0])
-        self.sigma_old = self.sigma
         if hasattr(self, "m") or self.x0 is None: 
             self.m = np.float64(np.random.uniform(self.lb, self.ub, (self.d, 1)))
         else:
             self.m = np.float64(self.x0.copy())
         self.m_old = np.empty((self.d, 1), dtype=np.float64)
-        self.C_old = np.eye(self.d , dtype=np.float64)
         self.dm = np.zeros(self.d, dtype=np.float64)
-        self.theta = np.zeros(int(self.d * (self.d + 3) / 2), dtype=np.float64)
         self.pc = np.zeros((self.d, 1), dtype=np.float64)
         self.ps = np.zeros((self.d, 1), dtype=np.float64)
-        self.pt = np.zeros(int(self.d * (self.d + 3) / 2), dtype=np.float64)
         self.B = np.eye(self.d, dtype=np.float64)
         self.C = np.eye(self.d, dtype=np.float64)
         self.D = np.ones((self.d, 1), dtype=np.float64)
@@ -509,13 +502,11 @@ class Parameters(AnnotatedStruct):
         self.s = 0
         self.rank_tpa = None
         self.hs = True
-        self.old_lambda_ = self.lambda_
         self.correction_factor = None
         self.pxmean = np.zeros(self.d, dtype=np.float64)
         self.pcov = np.zeros((self.d, self.d), dtype=np.float64)
         self.old_invLt = self.transform_inverse(np.eye(self.d))
         self.pnorm = 1
-        self.gammat = 0
 
     def adapt(self) -> None:
         """Method for adapting the internal state parameters.
@@ -530,7 +521,6 @@ class Parameters(AnnotatedStruct):
         self.adapt_covariance_matrix()
         self.perform_eigendecomposition()
         self.adapt_population_size()
-        self.correct_sigma()
         self.record_statistics()
         self.calculate_termination_criteria()
         self.old_population = self.population.copy()
@@ -552,8 +542,6 @@ class Parameters(AnnotatedStruct):
         One of these methods can be selected by setting the step_size_adaptation
         parameter.
         """ 
-        self.sigma_old = self.sigma.copy()
-        
         if self.step_size_adaptation == "csa":
             self.sigma *= np.exp(
                 (self.cs / self.damps) * ((np.linalg.norm(self.ps) / self.chiN) - 1)
@@ -601,10 +589,6 @@ class Parameters(AnnotatedStruct):
         If the option `active` is specified, active update of the covariance
         matrix is performed, using negative weights.
         """
-        
-        self.C_old = self.C.copy()
-        self.weights_old = self.weights.copy()
-        
         rank_one = self.c1 * self.pc * self.pc.T
 
         dhs = (1 - self.hs) * self.cc * (2 - self.cc)
@@ -694,7 +678,7 @@ class Parameters(AnnotatedStruct):
         self.pnorm = self.pmnorm + self.pcnorm
 
     def adapt_population_size(self) -> None:     
-        self.old_lambda_ = self.lambda_
+
         new_lambda_ = self.lambda_
         
         if self.pop_size_adaptation == 'exp-dec':
@@ -716,6 +700,10 @@ class Parameters(AnnotatedStruct):
         elif self.pop_size_adaptation == 'psa':
             new_lambda_ *= np.exp(self.other_beta * 
                 (1 - self.pnorm / self.alpha))
+            
+            self.correct_sigma()
+            
+            self.old_invLt = self.transform_inverse(np.eye(self.d))
         
         self.update_popsize(self.round_lambda(min(max(new_lambda_, self.min_lambda_), self.max_lambda_)))
         
@@ -737,7 +725,6 @@ class Parameters(AnnotatedStruct):
         else:
             self.correction_factor = self.sigma_normalization_factor()
         
-
     def sigma_normalization_factor(self):
         nos = NormalOrderStatistics(len(self.weights))
         nlam = nos.blom()
@@ -750,7 +737,6 @@ class Parameters(AnnotatedStruct):
         muw = np.sum(np.abs(self.weights)) ** 2 / np.dot(self.weights, self.weights)
         return beta * muw / (self.d - 1 + gamma * muw) / self.cmu
     
-
     def expected_update_snorm(self):
 
         N = self.d
@@ -769,14 +755,11 @@ class Parameters(AnnotatedStruct):
         cfactor = rankmu_factor + muone_factor + rankone_factor
         return mfactor + (sfactor_a5 * cfactor + N * sfactor_a6) / 2
     
-
     def transform(self, x):
         return np.dot(np.asarray(x), self.root_C) * self.sigma
     
-    
     def transform_inverse(self, x):
         return np.dot(np.asarray(x), self.inv_root_C) / self.sigma
-
         
     def perform_local_restart(self) -> None:
         """Method performing local restart, if a restart strategy is specified."""
