@@ -21,3 +21,7 @@ Running tests
 
 Running optimizer
 `$ python3 -m modcma  [-h] [-f FID] [-d DIM] [-i ITERATIONS] [-l] [-c] [-L LABEL] [-s SEED] [-a ARGUMENTS [ARGUMENTS ...]]`
+
+## Added for my Master's project
+Population size adaptation schemes. These can be selected with the parameter:
+`$ pop_size_adaptation`

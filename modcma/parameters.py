@@ -204,6 +204,8 @@ class Parameters(AnnotatedStruct):
         The evolution path
     ps: np.ndarray
         The conjugate evolution path
+    ptnorm: int
+        The norm of population size evolution path
     C: np.ndarray
         The covariance matrix
     B: np.ndarray
@@ -239,7 +241,17 @@ class Parameters(AnnotatedStruct):
         'dismiss'-boundary correction is used
     n_out_of_bounds: int
         The number of individals that are sampled out of bounds
-
+    pop_size_adaptation: str = (None, 'exp-inc', 'exp-dec', 'lin-inc', 'lin-dec', 'psa',)
+        Specifying which population size adaptation mechanism should be used.
+        'psa':
+              Kouhei Nishida and Youhei Akimoto, 2018,
+              PSA-CMA-ES: CMA-ES with population size adaptation.
+    rounding_scheme: str = (None, 'stochastic')
+        Specifying which rounding scheme shouldbe used
+    min_lambda_: int = None
+        Minimum population size for adaptive schemes
+    max_lambda_: int = None
+        Maximum population size for adaptive schemes
     """
 
     d: int
@@ -368,7 +380,7 @@ class Parameters(AnnotatedStruct):
         self.chiN = self.d ** 0.5 * (1 - 1 / (4 * self.d) + 1 / (21 * self.d ** 2))
         self.ds = 2 - (2 / self.d)
         self.beta = np.log(2) / max((np.sqrt(self.d) * np.log(self.d)), 1)
-        self.other_beta = 0.4
+        self.psa_beta = 0.4
         self.alpha = 1.4
         self.succes_ratio = .25
         
@@ -506,7 +518,7 @@ class Parameters(AnnotatedStruct):
         self.pxmean = np.zeros(self.d, dtype=np.float64)
         self.pcov = np.zeros((self.d, self.d), dtype=np.float64)
         self.old_invLt = self.transform_inverse(np.eye(self.d))
-        self.pnorm = 1
+        self.ptnorm = 1
 
     def adapt(self) -> None:
         """Method for adapting the internal state parameters.
@@ -642,7 +654,7 @@ class Parameters(AnnotatedStruct):
                 self.init_dynamic_parameters()
 
     def adapt_evolution_paths(self) -> None:
-        """Method to adapt the evolution paths ps and pc."""
+        """Method to adapt the evolution paths ps and pc. ADDED adapt the evolution path ptnorm"""
         self.dm = (self.m - self.m_old) / self.sigma 
         
         self.ps = (1 - self.cs) * self.ps + (
@@ -667,18 +679,29 @@ class Parameters(AnnotatedStruct):
         delta_cov = np.dot(delta_cov.T, delta_cov) - np.eye(self.d)
 
         factor = self.expected_update_snorm()
-        pnormfac = np.sqrt(self.other_beta * (2 - self.other_beta) / factor)
-        self.pxmean *= (1 - self.other_beta)
+        pnormfac = np.sqrt(self.psa_beta * (2 - self.psa_beta) / factor)
+        self.pxmean *= (1 - self.psa_beta)
         self.pxmean += pnormfac * delta_xmean
-        self.pcov *= (1 - self.other_beta)
+        self.pcov *= (1 - self.psa_beta)
         self.pcov += pnormfac * delta_cov
 
         self.pmnorm = np.sum(self.pxmean ** 2)
         self.pcnorm = np.sum(self.pcov ** 2) / 2
-        self.pnorm = self.pmnorm + self.pcnorm
+        self.ptnorm = self.pmnorm + self.pcnorm
 
     def adapt_population_size(self) -> None:     
+        """Method to adapt the population size lambda_
+        
+        There are three variants in implemented here, namely:
+            ~ Linear increasing (lin-inc)
+            ~ Linear decreasing (lin-dec)
+            ~ Exponential increasing (exp-inc)
+            ~ Exponential decreasing (exp-dec)
+            ~ PSA-CMA-ES (psa)
 
+        One of these methods can be selected by setting the pop_size_adaptation
+        parameter.
+        """
         new_lambda_ = self.lambda_
         
         if self.pop_size_adaptation == 'exp-dec':
@@ -698,17 +721,24 @@ class Parameters(AnnotatedStruct):
                 new_lambda_ = self.lambda_+10
                 
         elif self.pop_size_adaptation == 'psa':
-            new_lambda_ *= np.exp(self.other_beta * 
-                (1 - self.pnorm / self.alpha))
-            
-            self.correct_sigma()
+            new_lambda_ *= np.exp(self.psa_beta * 
+                (1 - self.ptnorm / self.alpha))
             
             self.old_invLt = self.transform_inverse(np.eye(self.d))
+            
+            self.correct_sigma()
         
         self.update_popsize(self.round_lambda(min(max(new_lambda_, self.min_lambda_), self.max_lambda_)))
         
     def round_lambda(self, x) -> int:
+        """Method to set the rounding scheme used for population size adaptation
         
+            ~ Default (None)
+            ~ Stochastic (stochastic)
+            
+        One of these methods can be selected by setting the rounding_scheme
+        parameter.
+        """
         if self.rounding_scheme == 'stochastic':
             d = abs(x - int(x))
             s = np.random.choice([0,1], size=1, p=[1-d, d])
@@ -718,6 +748,7 @@ class Parameters(AnnotatedStruct):
         
 
     def correct_sigma(self) -> None:
+        """Method to correct the step size in PSA-CMA-ES"""
         if self.correction_factor is not None:
             correction_factor_new = self.sigma_normalization_factor()
             self.sigma *= correction_factor_new / self.correction_factor
@@ -726,6 +757,7 @@ class Parameters(AnnotatedStruct):
             self.correction_factor = self.sigma_normalization_factor()
         
     def sigma_normalization_factor(self):
+        """Method to calculate the step size correction factor"""
         nos = NormalOrderStatistics(len(self.weights))
         nlam = nos.blom()
         beta = -np.dot(nlam, self.weights)
@@ -738,11 +770,11 @@ class Parameters(AnnotatedStruct):
         return beta * muw / (self.d - 1 + gamma * muw) / self.cmu
     
     def expected_update_snorm(self):
-
+        """Method to calculate the normalisation factor in the update of pt"""
         N = self.d
         w = self.weights
 
-        sfactor_a6 = 4. * self.ps_factor * (N / self.chiN ** 2 - 1) * (self.cs / self.ds) ** 2
+        sfactor_a6 = 4. * self.ps_factor * (N / self.chiN ** 2 - 1) * (self.cs / self.damps) ** 2
         sfactor_a5 = 1 + sfactor_a6 * 2
 
         v = np.zeros(w.shape)
@@ -1065,6 +1097,8 @@ class BIPOPParameters(AnnotatedStruct):
 
 class NormalOrderStatistics(object):
     """Compute Moments of Normal Order Statistics
+    
+    From: Kouhei Nishida and Youhei Akimoto. 2018. PSA-CMA-ES: CMA-ES with population size adaptation.
 
     Requires
     --------
